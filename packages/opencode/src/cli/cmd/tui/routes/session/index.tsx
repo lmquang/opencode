@@ -1612,6 +1612,19 @@ function GenericTool(props: ToolProps<any>) {
   const { theme } = useTheme()
   const ctx = use()
   const output = createMemo(() => props.output?.trim() ?? "")
+  const pending = createMemo(() => props.part.state.status === "pending" || props.part.state.status === "running")
+  const pendingLabel = createMemo(() => {
+    const message = props.metadata?.mcpMessage
+    const progress = props.metadata?.mcpProgress
+    const total = props.metadata?.mcpTotal
+    if (typeof message === "string" && message) {
+      if (typeof progress === "number") {
+        return `${message} (${typeof total === "number" ? `${progress}/${total}` : progress})`
+      }
+      return message
+    }
+    return "Running tool..."
+  })
   const [expanded, setExpanded] = createSignal(false)
   const lines = createMemo(() => output().split("\n"))
   const maxLines = 3
@@ -1625,8 +1638,11 @@ function GenericTool(props: ToolProps<any>) {
     <Show
       when={props.output && ctx.showGenericToolOutput()}
       fallback={
-        <InlineTool icon="⚙" pending="Writing command..." complete={true} part={props.part}>
+        <InlineTool icon="⚙" pending={pendingLabel()} complete={true} part={props.part}>
           {props.tool} {input(props.input)}
+          <Show when={pending()}>
+            <span style={{ fg: theme.textMuted }}> — {pendingLabel()}</span>
+          </Show>
         </InlineTool>
       }
     >

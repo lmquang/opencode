@@ -443,6 +443,7 @@ export const RunCommand = effectCmd({
 
         async function loop() {
           const toggles = new Map<string, boolean>()
+          const toolProgress = new Map<string, string>()
 
           for await (const event of events.stream) {
             if (
@@ -461,18 +462,33 @@ export const RunCommand = effectCmd({
               const part = event.properties.part
               if (part.sessionID !== sessionID) continue
 
-              if (part.type === "tool" && (part.state.status === "completed" || part.state.status === "error")) {
-                if (emit("tool_use", { part })) continue
-                if (part.state.status === "completed") {
-                  tool(part)
-                  continue
-                }
-                inline({
-                  icon: "✗",
-                  title: `${part.tool} failed`,
-                })
-                UI.error(part.state.error)
+              if (part.type === "tool" && (part.state.status === "pending" || part.state.status === "running")) {
+              const title = "title" in part.state && typeof part.state.title === "string" ? part.state.title : ""
+              const meta = "metadata" in part.state && part.state.metadata ? part.state.metadata : undefined
+              const progress = meta && typeof meta.mcpProgress === "number" ? meta.mcpProgress : undefined
+              const total = meta && typeof meta.mcpTotal === "number" ? meta.mcpTotal : undefined
+              const message = meta && typeof meta.mcpMessage === "string" ? meta.mcpMessage : undefined
+              const signature = `${title}|${progress ?? ""}|${total ?? ""}|${message ?? ""}`
+
+              if (toolProgress.get(part.id) !== signature) {
+                toolProgress.set(part.id, signature)
+                if (emit("tool_progress", { part })) continue
               }
+            }
+
+            if (part.type === "tool" && (part.state.status === "completed" || part.state.status === "error")) {
+              toolProgress.delete(part.id)
+              if (emit("tool_use", { part })) continue
+              if (part.state.status === "completed") {
+                tool(part)
+                continue
+              }
+              inline({
+                icon: "✗",
+                title: `${part.tool} failed`,
+              })
+              UI.error(part.state.error)
+            }
 
               if (
                 part.type === "tool" &&
@@ -539,6 +555,10 @@ export const RunCommand = effectCmd({
               event.properties.status.type === "idle"
             ) {
               break
+            }
+
+            if ((event.type as string) === "mcp.progress") {
+              if (emit("mcp_progress", { progress: (event as any).properties })) continue
             }
 
             if (event.type === "permission.asked") {

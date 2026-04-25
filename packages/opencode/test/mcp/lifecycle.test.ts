@@ -153,6 +153,12 @@ void mock.module("@modelcontextprotocol/sdk/client/index.js", () => ({
       return { resources: this._state?.resources ?? [] }
     }
 
+    async callTool(_input: unknown, _schema: unknown, opts?: { onprogress?: (event: { progress: number; total?: number; message?: string }) => void }) {
+      opts?.onprogress?.({ progress: 1, total: 3, message: "Preparing" })
+      opts?.onprogress?.({ progress: 2, total: 3, message: "Running" })
+      return { content: [{ type: "text", text: "ok" }] }
+    }
+
     async close() {
       if (this._state) this._state.closed = true
     }
@@ -171,6 +177,7 @@ beforeEach(() => {
 
 // Import after mocks
 const { MCP } = await import("../../src/mcp/index")
+const { Bus } = await import("../../src/bus")
 const { Instance } = await import("../../src/project/instance")
 const { WithInstance } = await import("../../src/project/with-instance")
 const { tmpdir } = await import("../fixture/fixture")
@@ -179,7 +186,7 @@ const { tmpdir } = await import("../fixture/fixture")
 
 function withInstance(
   config: Record<string, unknown>,
-  fn: (mcp: MCPNS.Interface) => Effect.Effect<void, unknown, never>,
+  fn: (mcp: MCPNS.Interface) => Effect.Effect<void, unknown, any>,
 ) {
   return async () => {
     await using tmp = await tmpdir({
@@ -197,7 +204,12 @@ function withInstance(
     await WithInstance.provide({
       directory: tmp.path,
       fn: async () => {
-        await Effect.runPromise(MCP.Service.use(fn).pipe(Effect.provide(MCP.defaultLayer)))
+        await Effect.runPromise(
+          MCP.Service.use(fn).pipe(
+            Effect.provide(MCP.defaultLayer),
+            Effect.provide(Bus.defaultLayer),
+          ) as Effect.Effect<void>,
+        )
         // dispose instance to clean up state between tests
         await InstanceRuntime.disposeInstance(Instance.current)
       },
@@ -240,6 +252,45 @@ test(
 // ========================================================================
 // Test: tool change notifications refresh the cache
 // ========================================================================
+
+test(
+  "MCP tool progress publishes structured MCP progress events",
+  withInstance({}, (mcp) =>
+    Effect.gen(function* () {
+      lastCreatedClientName = "toast-server"
+      getOrCreateClientState("toast-server")
+
+      const bus = yield* Bus.Service
+      const seen: string[] = []
+      const unsubscribe = yield* bus.subscribeCallback(MCP.Progress, (event) => {
+        seen.push(`${event.properties.tool}:${event.properties.progress}/${event.properties.total}:${event.properties.message}`)
+      })
+
+      yield* mcp.add("toast-server", {
+        type: "local",
+        command: ["echo", "test"],
+      })
+
+      const tools = yield* mcp.tools()
+      const key = Object.keys(tools).find((value) => value.startsWith("toast-server_"))
+      expect(key).toBeDefined()
+
+      const seenProgress: string[] = []
+      yield* Effect.promise(() =>
+        (tools[key!] as any).execute({}, {
+          experimental_onMcpProgress: (event: { progress: number; total?: number; message?: string }) => {
+            seenProgress.push(`${event.progress}/${event.total}:${event.message}`)
+          },
+        }),
+      )
+      yield* Effect.promise(() => Promise.resolve())
+      unsubscribe()
+
+      expect(seen).toEqual(["test_tool:1/3:Preparing", "test_tool:2/3:Running"])
+      expect(seenProgress).toEqual(["1/3:Preparing", "2/3:Running"])
+    }),
+  ),
+)
 
 test(
   "tool change notifications refresh cached tool definitions",

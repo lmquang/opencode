@@ -10,6 +10,7 @@ export type TriggerTitle = {
   title: string
   titleClass?: string
   subtitle?: string
+  pendingSubtitle?: () => string | undefined
   subtitleClass?: string
   args?: string[]
   argsClass?: string
@@ -145,8 +146,8 @@ export function BasicTool(props: BasicToolProps) {
                     >
                       <TextShimmer text={title().title} active={pending()} />
                     </span>
-                    <Show when={!pending()}>
-                      <Show when={title().subtitle}>
+                    <Show when={!pending() || !!title().pendingSubtitle?.()}>
+                      <Show when={!pending() ? title().subtitle : title().pendingSubtitle?.()}>
                         <span
                           data-slot="basic-tool-tool-subtitle"
                           classList={{
@@ -160,7 +161,7 @@ export function BasicTool(props: BasicToolProps) {
                             }
                           }}
                         >
-                          {title().subtitle}
+                          {!pending() ? title().subtitle : title().pendingSubtitle?.()}
                         </span>
                       </Show>
                       <Show when={title().args?.length}>
@@ -265,8 +266,22 @@ export function GenericTool(props: {
   status?: string
   hideDetails?: boolean
   input?: Record<string, unknown>
+   metadata?: Record<string, unknown>
 }) {
   const i18n = useI18n()
+  const pendingSubtitle = () => {
+    const message = props.metadata?.mcpMessage
+    const progress = props.metadata?.mcpProgress
+    const total = props.metadata?.mcpTotal
+    if (typeof message === "string" && message) {
+      if (typeof progress === "number") {
+        const progressLabel = typeof total === "number" ? `${progress}/${total}` : `${progress}`
+        return `${message} (${progressLabel})`
+      }
+      return message
+    }
+    return label(props.input)
+  }
 
   return (
     <BasicTool
@@ -275,6 +290,7 @@ export function GenericTool(props: {
       trigger={{
         title: i18n.t("ui.basicTool.called", { tool: props.tool }),
         subtitle: label(props.input),
+        pendingSubtitle: pendingSubtitle,
         args: args(props.input),
       }}
       hideDetails={props.hideDetails}

@@ -1,4 +1,4 @@
-import { dynamicTool, type Tool, jsonSchema, type JSONSchema7 } from "ai"
+import { dynamicTool, type Tool, jsonSchema, type JSONSchema7, type ToolExecutionOptions } from "ai"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js"
@@ -35,6 +35,7 @@ import { withStatics } from "@/util/schema"
 
 const log = Log.create({ service: "mcp" })
 const DEFAULT_TIMEOUT = 30_000
+const PROGRESS_EVENT_THROTTLE_MS = 750
 
 export const Resource = Schema.Struct({
   name: Schema.String,
@@ -59,6 +60,17 @@ export const BrowserOpenFailed = BusEvent.define(
   Schema.Struct({
     mcpName: Schema.String,
     url: Schema.String,
+  }),
+)
+
+export const Progress = BusEvent.define(
+  "mcp.progress",
+  Schema.Struct({
+    server: Schema.String,
+    tool: Schema.String,
+    progress: Schema.Number,
+    total: Schema.optional(Schema.Number),
+    message: Schema.optional(Schema.String),
   }),
 )
 
@@ -120,7 +132,13 @@ function remoteURL(key: string, value: string) {
 }
 
 // Convert MCP tool definition to AI SDK Tool type
-function convertMcpTool(mcpTool: MCPToolDef, client: MCPClient, timeout?: number): Tool {
+function convertMcpTool(
+  mcpTool: MCPToolDef,
+  clientName: string,
+  client: MCPClient,
+  timeout: number | undefined,
+  onProgress?: (event: { progress: number; total?: number; message?: string }) => void,
+): Tool {
   const inputSchema = mcpTool.inputSchema
 
   // Spread first, then override type to ensure it's always "object"
@@ -134,7 +152,12 @@ function convertMcpTool(mcpTool: MCPToolDef, client: MCPClient, timeout?: number
   return dynamicTool({
     description: mcpTool.description ?? "",
     inputSchema: jsonSchema(schema),
-    execute: async (args: unknown) => {
+    execute: async (
+      args: unknown,
+      options?: ToolExecutionOptions & {
+        experimental_onMcpProgress?: (event: { progress: number; total?: number; message?: string }) => void
+      },
+    ) => {
       return client.callTool(
         {
           name: mcpTool.name,
@@ -142,6 +165,10 @@ function convertMcpTool(mcpTool: MCPToolDef, client: MCPClient, timeout?: number
         },
         CallToolResultSchema,
         {
+          onprogress: (event) => {
+            options?.experimental_onMcpProgress?.(event)
+            onProgress?.(event)
+          },
           resetTimeoutOnProgress: true,
           timeout,
         },
@@ -243,8 +270,28 @@ export const layer = Layer.effect(
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const auth = yield* McpAuth.Service
     const bus = yield* Bus.Service
+    const bridge = yield* EffectBridge.make()
+    const progressEvents = new Map<string, { at: number; message: string }>()
 
     type Transport = StdioClientTransport | StreamableHTTPClientTransport | SSEClientTransport
+
+    const publishMcpProgress = (server: string, tool: string, progress: number, total?: number, message?: string) => {
+      const nextMessage = message ?? ""
+      const key = `${server}:${tool}`
+      const now = Date.now()
+      const previous = progressEvents.get(key)
+      if (previous && previous.message === nextMessage && now - previous.at < PROGRESS_EVENT_THROTTLE_MS) return
+      progressEvents.set(key, { at: now, message: nextMessage })
+      bridge.fork(
+        bus.publish(Progress, {
+          server,
+          tool,
+          progress,
+          total,
+          message: message || undefined,
+        }),
+      )
+    }
 
     /**
      * Connect a client via the given transport with resource safety:
@@ -654,7 +701,13 @@ export const layer = Layer.effect(
 
             const timeout = entry?.timeout ?? defaultTimeout
             for (const mcpTool of listed) {
-              result[sanitize(clientName) + "_" + sanitize(mcpTool.name)] = convertMcpTool(mcpTool, client, timeout)
+              result[sanitize(clientName) + "_" + sanitize(mcpTool.name)] = convertMcpTool(
+                mcpTool,
+                clientName,
+                client,
+                timeout,
+                (event) => publishMcpProgress(clientName, mcpTool.name, event.progress, event.total, event.message),
+              )
             }
           }),
         { concurrency: "unbounded" },
