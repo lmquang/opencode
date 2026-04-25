@@ -1638,8 +1638,11 @@ function GenericTool(props: ToolProps<any>) {
     <Show
       when={props.output && ctx.showGenericToolOutput()}
       fallback={
-        <InlineTool icon="⚙" pending={pendingLabel()} complete={!pending()} part={props.part}>
+        <InlineTool icon="⚙" pending={pendingLabel()} complete={true} part={props.part}>
           {props.tool} {input(props.input)}
+          <Show when={pending()}>
+            <span style={{ fg: theme.textMuted }}> — {pendingLabel()}</span>
+          </Show>
         </InlineTool>
       }
     >
