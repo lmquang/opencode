@@ -10,7 +10,7 @@ export type TriggerTitle = {
   title: string
   titleClass?: string
   subtitle?: string
-  pendingSubtitle?: string
+  pendingSubtitle?: () => string | undefined
   subtitleClass?: string
   args?: string[]
   argsClass?: string
@@ -146,8 +146,8 @@ export function BasicTool(props: BasicToolProps) {
                     >
                       <TextShimmer text={title().title} active={pending()} />
                     </span>
-                    <Show when={!pending() || !!title().pendingSubtitle}>
-                      <Show when={!pending() ? title().subtitle : title().pendingSubtitle}>
+                    <Show when={!pending() || !!title().pendingSubtitle?.()}>
+                      <Show when={!pending() ? title().subtitle : title().pendingSubtitle?.()}>
                         <span
                           data-slot="basic-tool-tool-subtitle"
                           classList={{
@@ -161,7 +161,7 @@ export function BasicTool(props: BasicToolProps) {
                             }
                           }}
                         >
-                          {!pending() ? title().subtitle : title().pendingSubtitle}
+                          {!pending() ? title().subtitle : title().pendingSubtitle?.()}
                         </span>
                       </Show>
                       <Show when={title().args?.length}>
@@ -290,7 +290,7 @@ export function GenericTool(props: {
       trigger={{
         title: i18n.t("ui.basicTool.called", { tool: props.tool }),
         subtitle: label(props.input),
-        pendingSubtitle: pendingSubtitle(),
+        pendingSubtitle: pendingSubtitle,
         args: args(props.input),
       }}
       hideDetails={props.hideDetails}
