@@ -451,10 +451,39 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         const schema = yield* Effect.promise(() => Promise.resolve(asSchema(item.inputSchema).jsonSchema))
         const transformed = ProviderTransform.schema(input.model, schema)
         item.inputSchema = jsonSchema(transformed)
-        item.execute = (args, opts) =>
+              item.execute = (args, opts) =>
           run.promise(
             Effect.gen(function* () {
               const ctx = context(args, opts)
+              const progressMessages: string[] = []
+              const updateProgress = (event: { progress: number; total?: number; message?: string }) => {
+                if (event.message && progressMessages[progressMessages.length - 1] !== event.message) {
+                  progressMessages.push(event.message)
+                }
+                return input.processor.updateToolCall(opts.toolCallId, (match) => {
+                  if (match.state.status === "completed" || match.state.status === "error") return match
+                  const progressLabel = typeof event.total === "number" ? `${event.progress}/${event.total}` : `${event.progress}`
+                  const title = event.message ? `${event.message} (${progressLabel})` : `${key} (${progressLabel})`
+                  const start = match.state.status === "running" ? match.state.time.start : Date.now()
+                  const existing = match.state.status === "running" ? (match.state.metadata ?? {}) : {}
+                  return {
+                    ...match,
+                    state: {
+                      status: "running",
+                      title,
+                      input: args,
+                      time: { start },
+                      metadata: {
+                        ...existing,
+                        mcpProgress: event.progress,
+                        mcpTotal: event.total,
+                        mcpMessage: event.message,
+                      },
+                    },
+                  }
+                })
+              }
+
               yield* plugin.trigger(
                 "tool.execute.before",
                 { tool: key, sessionID: ctx.sessionID, callID: opts.toolCallId },
@@ -462,7 +491,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               )
               yield* ctx.ask({ permission: key, metadata: {}, patterns: ["*"], always: ["*"] })
               const result: Awaited<ReturnType<NonNullable<typeof execute>>> = yield* Effect.promise(() =>
-                execute(args, opts),
+                execute(args, { ...opts, experimental_onMcpProgress: (event: { progress: number; total?: number; message?: string }) => run.promise(updateProgress(event)) } as typeof opts),
               )
               yield* plugin.trigger(
                 "tool.execute.after",
@@ -492,6 +521,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                     })
                   }
                 }
+              }
+
+              if (progressMessages.length > 0) {
+                textParts.unshift("Progress:\n" + progressMessages.map((m, i) => `${i + 1}. ${m}`).join("\n"))
               }
 
               const truncated = yield* truncate.output(textParts.join("\n\n"), {}, input.agent)
